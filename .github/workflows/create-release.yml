@@ -1,0 +1,77 @@
+name: "Create release"
+
+on:
+  push:
+    tags:
+      - "*"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -l -e -o pipefail {0}
+
+    env:
+      IMAGE_NAME: nanoplexer
+      REPOSITORY_OWNER: ${{ github.repository_owner }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: "Fetch Tags"
+        # Workaround for https://github.com/actions/checkout/issues/290 (still, in 2025)
+        run: git fetch --tags --force
+
+      - name: "Get release variables"
+        run: |
+          echo 'RELEASE_VERSION='$(git describe --always --tags --dirty) >> $GITHUB_ENV
+          echo 'MASTER_SHA='$(git rev-parse origin/master) >> $GITHUB_ENV
+          
+          echo 'GIT_URL='$(git remote get-url origin) >> $GITHUB_ENV
+          echo 'GIT_COMMIT='$(git log --pretty=format:'%H' -n 1) >> $GITHUB_ENV
+
+      - name: "Create Release"
+        uses: ncipollo/release-action@440c8c1cb0ed28b9f43e4d1d670870f059653174
+        with:
+          name: ${{ env.RELEASE_VERSION }}
+          prerelease: ${{ !(github.sha == env.MASTER_SHA) }}
+          generateReleaseNotes: true
+
+      - name: "Set up Docker Buildx"
+        uses: docker/setup-buildx-action@v3
+        with:
+          install: true
+
+      - name: "Login to Docker registry"
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "Build Docker image"
+        run: |
+          docker build \
+            --file Dockerfile \
+            --platform linux/amd64 \
+            --progress plain \
+            --load \
+            --label "org.opencontainers.image.title=${IMAGE_NAME}" \
+            --label "org.opencontainers.image.source=${GIT_URL}" \
+            --label "org.opencontainers.image.revision=${GIT_COMMIT}" \
+            --label "org.opencontainers.image.version=${RELEASE_VERSION}" \
+            --label "org.opencontainers.image.created=$(date --utc --iso-8601=seconds)" \
+            --label "org.opencontainers.image.vendor=npg.sanger.ac.uk" \
+            --tag "ghcr.io/$REPOSITORY_OWNER/$IMAGE_NAME:${RELEASE_VERSION}" \
+            --tag "ghcr.io/$REPOSITORY_OWNER/$IMAGE_NAME:latest" \
+            .
+      - name: "Push Docker image"
+        run: |
+          docker images
+          echo pushing "ghcr.io/$REPOSITORY_OWNER/$IMAGE_NAME:$RELEASE_VERSION"
+          docker push "ghcr.io/$REPOSITORY_OWNER/$IMAGE_NAME:$RELEASE_VERSION"
+          docker push "ghcr.io/$REPOSITORY_OWNER/$IMAGE_NAME:latest"
